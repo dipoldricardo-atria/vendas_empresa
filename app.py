@@ -1,44 +1,80 @@
-import io # Para processar o arquivo na memória
+import streamlit as st
+from streamlit_gsheets import GSheetsConnection
+import pandas as pd
+from datetime import datetime, date
+from dateutil.relativedelta import relativedelta
 
-# --- DENTRO DO BLOCO 'IF MENU == "Dashboard":' ---
-st.markdown("---")
-st.subheader("🏁 Fechamento de Mês para o Financeiro")
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="Gestão Comercial Tech", layout="wide")
 
-# Seleção de Mês e Ano para o Relatório
-col_mes, col_ano, col_btn = st.columns([2, 2, 3])
-mes_sel = col_mes.selectbox("Mês", list(range(1, 13)), index=datetime.now().month - 1)
-ano_sel = col_ano.selectbox("Ano", [2024, 2025, 2026], index=2) # Index 2 = 2026
+# --- CONEXÃO COM GOOGLE SHEETS ---
+# Substitua pelo link que você copiou no Passo 1
+URL_PLANILHA = "COLE_AQUI_O_LINK_DA_SUA_PLANILHA"
 
-if col_btn.button("Gerar Relatório de Comissões"):
-    # Filtrar parcelas PAGAS no mês/ano selecionado
-    # (Considerando que a data da parcela é quando o dinheiro caiu)
-    query = f"SELECT vendedor, cliente, tipo, valor, comissao, data FROM parcelas WHERE status='Pago'"
-    df_relatorio = pd.read_sql(query, conn)
-    
-    # Converter data para filtrar por mês/ano
-    df_relatorio['data'] = pd.to_datetime(df_relatorio['data'])
-    df_final = df_relatorio[(df_relatorio['data'].dt.month == mes_sel) & 
-                            (df_relatorio['data'].dt.year == ano_sel)]
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-    if not df_final.empty:
-        # Criar arquivo Excel em memória
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_final.to_excel(writer, index=False, sheet_name='Comissoes')
+# Função para ler os dados da nuvem
+def buscar_dados(aba):
+    return conn.read(spreadsheet=URL_PLANILHA, worksheet=aba)
+
+# --- SISTEMA DE LOGIN ---
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+
+def tela_login():
+    st.title("🚀 Portal Comercial - Tech")
+    with st.sidebar:
+        st.subheader("Login de Acesso")
+        email = st.text_input("E-mail Corporativo")
+        senha = st.text_input("Senha", type="password")
+        if st.button("Acessar Painel"):
+            df_users = buscar_dados("usuarios")
+            # Verifica se e-mail e senha batem
+            usuario = df_users[(df_users['email'] == email) & (df_users['senha'].astype(str) == senha)]
+            if not usuario.empty:
+                st.session_state['logged_in'] = True
+                st.session_state['user_info'] = usuario.iloc[0]
+                st.rerun()
+            else:
+                st.error("Credenciais inválidas")
+
+if not st.session_state['logged_in']:
+    tela_login()
+else:
+    u = st.session_state['user_info']
+    st.sidebar.success(f"Logado: {u['nome']}")
+    if st.sidebar.button("Encerrar Sessão"):
+        st.session_state['logged_in'] = False
+        st.rerun()
+
+    # --- MENU DE NAVEGAÇÃO ---
+    opcoes = ["Dashboard", "Cadastrar Venda", "Baixa de Pagamentos"] if u['perfil'] == "Admin" else ["Minhas Comissões"]
+    menu = st.sidebar.radio("Navegação", opcoes)
+
+    # --- ABA: DASHBOARD ---
+    if menu == "Dashboard":
+        st.title("📊 Painel de Controle (Diretoria)")
+        st.divider() # Linha divisória segura
+        
+        df_v = buscar_dados("vendas")
+        if not df_v.empty:
+            total_fat = df_v[df_v['status'] == 'Pago']['valor'].sum()
+            st.metric("Faturamento Total Realizado", f"R$ {total_fat:,.2f}")
+            st.dataframe(df_v, use_container_width=True)
+        else:
+            st.info("Nenhuma venda registrada na planilha ainda.")
+
+    # --- ABA: CADASTRAR VENDA ---
+    elif menu == "Cadastrar Venda":
+        st.subheader("Inserir Novo Contrato")
+        with st.form("nova_venda"):
+            cliente = st.text_input("Nome do Cliente")
+            v_total = st.number_input("Valor Total do Projeto", min_value=0.0)
+            v_entrada = st.number_input("Valor de Entrada", min_value=0.0)
+            parcelas = st.number_input("Nº de Parcelas Restantes", min_value=1, step=1)
+            data_venda = st.date_input("Data da Venda", date.today())
             
-            # Formatação visual básica no Excel
-            workbook  = writer.book
-            worksheet = writer.sheets['Comissoes']
-            format_moeda = workbook.add_format({'num_format': 'R$ #,##0.00'})
-            worksheet.set_column('D:E', 15, format_moeda) # Colunas Valor e Comissão
-            worksheet.set_column('A:C', 20)
-            
-        st.success(f"Relatório de {mes_sel}/{ano_sel} gerado com sucesso!")
-        st.download_button(
-            label="📥 Baixar Excel para o Financeiro",
-            data=output.getvalue(),
-            file_name=f"Fechamento_Comissoes_{mes_sel}_{ano_sel}.xlsx",
-            mime="application/vnd.ms-excel"
-        )
-    else:
-        st.warning("Não há comissões pagas neste período para exportar.")
+            if st.form_submit_button("Gerar e Sincronizar"):
+                # Aqui o sistema gera os dados e você cola na planilha
+                st.success("Dados gerados! Para salvar na nuvem, você deve inserir no Google Sheets.")
+                st.info("Nota: No Streamlit Cloud, a escrita direta exige configuração de API JSON.")
